@@ -1,63 +1,92 @@
 import os
+import sys
+import shutil
 from documents_process import DocumentsProcess
-from vector_store import Vector_Store
-from test_chunks import Test_Chunks
-from ragy import RAGY
+from vector_store     import Vector_Store
+from test_chunks      import Test_Chunks
+from ragy             import RAGY
 
-def main():
+def main(force_rebuild: bool = False):
     input_folder = "./selectedDocs"
-    persist_dir = "./chroma_db"
+    persist_dir  = "./chroma_db"
 
-    #Inicializa o gerenciador de vetores
-    vectorstore_creator = Vector_Store(embedding_model_base="llama3")
-    vector_store = vectorstore_creator.load_vector_store(persist_dir)
-    
-    #Cria o vector store a partir dos documentos em casso de não houver
+    # ▶️ force‐rebuild if requested
+    if force_rebuild and os.path.isdir(persist_dir):
+        shutil.rmtree(persist_dir)
+        print(f"🔥 Cleared persist dir: {persist_dir}")
+
+    vs_creator   = Vector_Store(embedding_model_base="llama3")
+    vector_store = vs_creator.load_vector_store(persist_dir)
+
+    # 1) If store missing, build it from scratch
     if vector_store is None:
-        # Se não existir vector store, carregue os documentos e crie um novo
-        pdf_processor = DocumentsProcess(chunk_size=500, chunk_overlap=100)
-        documents = pdf_processor.load_and_process(input_folder)
-                   
-        if not documents:
+        print("🆕 Building new vector store…")
+        pdf_proc = DocumentsProcess(chunk_size=1000, chunk_overlap=200)
+        docs     = pdf_proc.load_and_process(input_folder)
+        if not docs:
             print("Nenhum documento processado. Encerrando.")
             return
+        vector_store = vs_creator.create_vector_store(
+            documents=docs,
+            persist_directory=persist_dir,
+        )
 
-        vector_store = vectorstore_creator.create_vector_store(documents, persist_directory=persist_dir)
-
-        if not vector_store:
-            print("Falha ao criar o vector store. Encerrando.")
-            return
+    # 2) Else — load existing and only index _new_ PDFs
     else:
-        print("Vector store carregado com sucesso!")
+        print("🔄 Loaded existing vector store. Checking for new PDFs…")
+        collection       = vector_store.get()
+        existing_sources = {m.get("source") for m in collection["metadatas"]}
 
+        all_pdfs = [
+            f for f in os.listdir(input_folder)
+            if f.lower().endswith(".pdf")
+        ]
+        to_index = [f for f in all_pdfs if f not in existing_sources]
 
-    
+        if to_index:
+            pdf_proc   = DocumentsProcess(chunk_size=1000, chunk_overlap=200)
+            new_chunks = []
+            for fname in to_index:
+                print(f"Processing new file: {fname}")
+                fullpath = os.path.join(input_folder, fname)
+                text     = pdf_proc._extract_text_from_pdf(fullpath)
+                if not text:
+                    continue
+                chunks = pdf_proc._chunk_text(text, fname)
+                new_chunks.extend(chunks)
+
+            if new_chunks:
+                vector_store.add_documents(new_chunks)
+                vector_store.persist()
+                print(f"✅ Indexed {len(new_chunks)} chunks from {len(to_index)} new PDFs.")
+        else:
+            print("👍 No new PDFs to index.")
+
+    # Sanity: show first chunk per source
     inspector = Test_Chunks(vector_store)
     inspector.mostrar_primer_chunk_por_documento()
 
-    # Inicializar o  RAG (agora ele usa o vector_store carregado ou criado)
-    rag_pipeline = RAGY(vector_store=vector_store, llm_model="llama3")
-
-    if not rag_pipeline.rag_chain:
-        print("Falha ao inicializar o pipeline RAG. Encerrando.")
+    # Build RAG pipeline
+    rag = RAGY(vector_store=vector_store, llm_model="llama3:latest")
+    if not rag.rag_chain:
+        print("Falha ao inicializar RAG. Encerrando.")
         return
 
+    # Interactive ask loop
     while True:
-        pergunta = input("Digite sua pergunta (ou 'sair' para encerrar): ")
-        if pergunta.lower() == 'sair':
+        pergunta = input("Pergunta (ou 'sair'): ")
+        if pergunta.lower() == "sair":
             break
-        
-        #Mostra os chunks dos documentos recuperados
-        print("\n Documentos recuperados:")
-        docs = vector_store.similarity_search(pergunta, k=3)
-        for i, doc in enumerate(docs):
-            print(f"\n --- Documento {i+1} ---")
-            print(doc.page_content[:800])
-        
 
-        resposta = rag_pipeline.query(pergunta)
-        print(f"Pergunta: {pergunta}")
-        print(f"Resposta: {resposta}\n")
+        docs = vector_store.similarity_search(pergunta, k=3)
+        for i, d in enumerate(docs, start=1):
+            print(f"\n— Doc {i} ({d.metadata['source']}):")
+            print(d.page_content[:500], "…")
+
+        resposta = rag.query(pergunta)
+        print(f"\n🤖 Resposta: {resposta}\n")
+
 
 if __name__ == "__main__":
-    main()
+    fr = "--force-rebuild" in sys.argv
+    main(force_rebuild=fr)

@@ -82,18 +82,3 @@ class DocumentsProcess:
 dp = DocumentsProcess()
 docs = dp.load_and_process("./selectedDocs")   
 print(len(docs)) 
-    
-"""
-processor = DocumentsProcess(chunk_size=500, chunk_overlap=100)
-documents = processor.load_and_process("./selectedDocs")
-print(f"Número de documentos/chunks gerados: {len(documents)}")
-if documents:
-    print(f"Primeiro chunk:\n{documents[0].page_content[:100]}...")
-    print(f"Metadata do primeiro chunk: {documents[0].metadata}")
-
-"""
-    
-
-
-
-        

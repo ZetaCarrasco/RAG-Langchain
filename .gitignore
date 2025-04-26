@@ -1,0 +1,5 @@
+# Chroma persistence (binary DB files)
+chroma_db/
+# Python bytecode
+__pycache__/
+*.pyc
